@@ -20,6 +20,7 @@ ANOLISA — Agentic OS monorepo。组件及技术栈：
 1. **编码前思考**: 不假设，不确定就问。有歧义呈现多种解释。有更简方案就说。困惑时停下来。
 2. **简洁优先**: 只写最少代码。不为单词用加抽象。不加未要求的功能/灵活性/错误处理。200行能变50行就重写。自问"资深工程师会觉得过度复杂吗？"
 3. **精准修改**: 只改任务相关行。不改相邻代码/注释/格式。匹配现有风格。注意到死代码只提不删。清理自己改动造成的孤儿引用。检验：每行改动都能追溯到用户原话。
+4. **最小改动**: 每次改动只做必须做的，不多也不少。不附带无关依赖升级、格式调整或顺手优化。验证时逐行审视 diff，确保零冗余。
 4. **目标驱动执行**: 将任务转成可验证目标——先写复现测试→让测试通过→验证无回归。多步骤给出 `步骤→verify:检查点` 计划。循环验证直到达成。
 
 > 偏向谨慎而非速度。琐碎任务自行判断。
@@ -32,7 +33,7 @@ ANOLISA — Agentic OS monorepo。组件及技术栈：
 
 **Tag**: `<scope>/vX.Y.Z`，仅 main 分支，annotated tag (`git tag -a`)，禁止 force push/删除。
 
-**版本**: 独立 SemVer。Bug→PATCH, Feat→MINOR, Breaking→MAJOR(须Issue讨论)。release 分支手动 bump。
+**版本**: 独立 SemVer。Bug→PATCH, Feat→MINOR, Breaking→MAJOR(须Issue讨论)。release 分支手动 bump。Rust 子项目(tokenless/sight/ckpt) bump 版本时必须同步更新 `Cargo.lock`（`cargo update -p <workspace-crates>`，仅更新 workspace 包，不附带外部依赖升级）。
 
 **语言**: 代码和注释仅英文。
 
