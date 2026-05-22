@@ -53,6 +53,8 @@ ANOLISA — Agentic OS monorepo。组件及技术栈：
 
 **Merge**: 子任务→集成分支 = Squash；集成分支→main = Rebase。
 
+**RPM 构建**: 重新编译构建 RPM 前必须清理历史构建中间文件及旧 RPM 包（`scripts/rpmbuild/` 下的 RPMS/SOURCES/BUILD/BUILDROOT/SRPMS + `cargo clean`）。安装新 RPM 包前必须显式卸载已安装的 RPM 包（`rpm -e <package>`），避免版本残留冲突。
+
 ## 开发模式
 
 - **Fast Track**(单人+单功能+集中): main拉分支 → 开发 → PR → Squash Merge → 删分支
@@ -60,7 +62,7 @@ ANOLISA — Agentic OS monorepo。组件及技术栈：
 
 ## Pre-Commit CI 检查
 
-每次 commit 前按变更组件执行。commitlint(`.github/commitlint.config.json`): scope-empty=error(2)必填, scope-enum=warn(1), header≤120=error(2)。有效scope: cosh,sec-core,skill,sight,tokenless,ckpt,deps,ci,docs,chore。PR lint(warning不阻断): 标题格式/分支命名/Issue关联。
+每次 commit 前按变更组件执行。commitlint(`.github/commitlint.config.json`): scope-empty=error(2)必填, scope-enum=warn(1), header≤120=error(2), body-line≤100=error(2)。有效scope: cosh,sec-core,skill,sight,tokenless,ckpt,deps,ci,docs,chore。PR lint(warning不阻断): 标题格式/分支命名/Issue关联。
 
 ### copilot-shell
 ```bash
@@ -91,8 +93,9 @@ cd openclaw-plugin && npm install && cd .. && make test-openclaw-plugin-coverage
 ### tokenless
 ```bash
 cd src/tokenless
-cargo fmt --all --check && cargo clippy --workspace -- -D warnings && cargo test --workspace
+cargo fmt -p tokenless-cli -p tokenless-schema -p tokenless-stats -- --check && cargo clippy -p tokenless-cli -p tokenless-schema -p tokenless-stats -- -D warnings && cargo test -p tokenless-cli -p tokenless-schema -p tokenless-stats
 ```
+> CI 使用 Rust 1.89.0。本地 Rust 版本可能更高，导致 stable-only API 本地通过但 CI 失败。禁止使用高于 CI Rust 版本才稳定的 API；如需此类功能，必须用兼容 CI 版本的手写实现替代。本地 CI 检查前须确认未引入 CI 版本不可用的 unstable 特性。
 
 ### agentsight
 ```bash
@@ -108,3 +111,39 @@ cargo fmt --all --check && cargo clippy --workspace -- -D warnings && cargo test
 ## 代码规范
 
 TS: ESLint+Prettier | Python: Ruff+Black | Rust: `cargo fmt` + `cargo clippy -- -D warnings`。不隐藏错误。每次改动提升代码质量。
+
+## Review 经验
+
+Review 时按以下逻辑体系逐层审查，输出结论分三级：阻塞(block) / 建议修(suggest) / 可选清理(clean)。
+
+### 1. 安全与信任链
+
+- **不可伪造的身份源**: 凡依赖用户可控输入（`$HOME`/env var/CLI arg）推导身份（uid/gid/权限），必须用 syscall 或不可篡改源。`$HOME`/`dirs::home_dir()` 可被任意改写，不构成信任锚。应直接用 `libc::getuid()`/`rustix::process::getuid()` 等 OS syscall。
+- **信任链传导**: 身份推断 → 文件所有者校验 → 信任判定。锚点一旦可伪造，后续全部失效。审查时画出完整信任链，检查每一步是否可被攻击者中断或注入。
+- **静默降级**: 错误时 fallback 到高权限值（如 `unwrap_or(0)` 返回 root uid）比 crash 更危险。审查 fallback 值的权限语义。
+
+### 2. 错误传播与静默忽略
+
+- **构建步骤失败不应静默继续**: patch/compile/install 失败只打 WARNING 后继续 → 产物功能缺失但构建"成功" → 用户无感知。关键步骤（patch 应用、二进制安装、schema 迁移）失败必须 exit/hard fail。
+- **`2>/dev/null || true` 审查**: 安装/部署步骤用此模式静默忽略失败 → 缺失组件被 symlink 指向空 → 运行时才暴露。install 步骤失败应中断构建，不应吞掉错误。
+- **依赖缺失 hard fail vs warn**: 构建必需依赖（just/toon/jq）缺失 → die；运行时可选依赖缺失 → warn 并降级。区分场景，不一刀切。
+
+### 3. 注释与实际一致性
+
+- **"no network needed" 声明**: 凡 `cargo install`/`pip install`/`npm install` 步骤默认联网。声称"no network needed"时，必须有 `--offline` + vendored source 佐证。否则改注释承认联网需求，并确保构建环境有镜像源。
+- **版本约束注释**: `BuildRequires: rust >= X.Y` 注释必须解释为什么是这个版本而非更低的。注释与实际约束矛盾（注释说 >=1.86 但 spec 写 >=1.89）时，补全解释（edition/API stability 等原因）。
+
+### 4. 构建依赖闭环
+
+- **首次用户体验**: `do_install_deps` 安装的依赖必须覆盖 `build` 步骤的所有前提。如果 build 需要 `just`/`toon`/特定 Rust 版本，deps 步骤必须安装它们。审查时从 build recipe 逆推所有前提，与 deps 步骤做集合差，差集即为遗漏。
+- **依赖版本最低要求注释化**: 每个 `REQUIRED="X.Y.Z"` 应有注释说明触发原因（edition/feature/API 等），便于后续版本升级时判断是否可降低。
+
+### 5. 跨文件重复与一致性
+
+- **常量去重**: 同一常量（fallback 路径、版本号）在 N 个文件各定义一份 → 改一处漏其余。抽到共享模块/常量文件。跨语言重复（Rust/Python）若完全去重成本过高，至少 Python 端内部去重。
+- **thiserror 属性冗余**: `#[from]` 已隐含 `#[source]`，同时标注两者冗余。thiserror 文档明确声明此规则。
+
+### 6. 构建产物验证
+
+- **patch fuzz 验证**: `patch --forward` 允许 fuzz 匹配 → context 行偏移仍成功但可能 patch 到错误位置。CI/发布前必须跑一次干净构建并验证 patch 精确匹配（0-fuzz），贴输出到 PR description。
+- **缩进一致性**: shell 脚本 `else` 分支内行无缩进、注释缩进不一致 → 影响可读性但不影响功能。低优先级但应在改动触及该文件时顺手修。
