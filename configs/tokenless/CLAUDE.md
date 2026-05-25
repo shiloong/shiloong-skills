@@ -25,6 +25,17 @@ ANOLISA — Agentic OS monorepo。组件及技术栈：
 
 > 偏向谨慎而非速度。琐碎任务自行判断。
 
+## 交互纪律
+
+1. **验证优先**: 每次修改必须附带验证方法——运行测试、构建检查或可观察的行为变化。没有验证的代码不算完成。
+2. **治本不治标**: 面对报错，解决根本原因，不仅消除症状（suppress/ignore）。禁止用 `unwrap_or`/`2>/dev/null`/`|| true` 掩盖错误。
+3. **先规划再动手**: 涉及 ≥2 文件或不确定影响范围时，先进入 Plan 模式探索和规划，经用户确认后再实施。单文件小改可直接执行。
+4. **一事一议**: 一个会话只推进一个任务主线。插问用 `/btw` 处理，不搅乱主上下文。
+5. **约束前置**: 最重要的约束（如"绝不动配置文件"、"只改这行"）放在 prompt 最前面，不埋在中间。
+6. **限缩探索范围**: 用 `@文件路径` 指定关注范围，不要无限探索整个仓库。研究型探索交给 SubAgent。
+7. **陷入循环就止损**: 连续两轮在同一问题原地打转时，停止并汇报，而不是继续补补丁。建议用户 `/clear` 重开。
+8. **反馈闭环**: 完成修改后，主动运行验证并报告结果。失败则继续修复直到通过，不要半途交给用户。
+
 ## 强制约束
 
 **Commit**: `type(scope): description`，英文，小写开头，无句号。scope 必填（CI 硬阻断）。Breaking 加 `!`。scope→路径: cosh→copilot-shell, sec-core→agent-sec-core, skill→os-skills, sight→agentsight, tokenless, ckpt→ws-ckpt, ci→.github/workflows, docs, deps→lock/toml, chore→其他。
@@ -114,36 +125,4 @@ TS: ESLint+Prettier | Python: Ruff+Black | Rust: `cargo fmt` + `cargo clippy -- 
 
 ## Review 经验
 
-Review 时按以下逻辑体系逐层审查，输出结论分三级：阻塞(block) / 建议修(suggest) / 可选清理(clean)。
-
-### 1. 安全与信任链
-
-- **不可伪造的身份源**: 凡依赖用户可控输入（`$HOME`/env var/CLI arg）推导身份（uid/gid/权限），必须用 syscall 或不可篡改源。`$HOME`/`dirs::home_dir()` 可被任意改写，不构成信任锚。应直接用 `libc::getuid()`/`rustix::process::getuid()` 等 OS syscall。
-- **信任链传导**: 身份推断 → 文件所有者校验 → 信任判定。锚点一旦可伪造，后续全部失效。审查时画出完整信任链，检查每一步是否可被攻击者中断或注入。
-- **静默降级**: 错误时 fallback 到高权限值（如 `unwrap_or(0)` 返回 root uid）比 crash 更危险。审查 fallback 值的权限语义。
-
-### 2. 错误传播与静默忽略
-
-- **构建步骤失败不应静默继续**: patch/compile/install 失败只打 WARNING 后继续 → 产物功能缺失但构建"成功" → 用户无感知。关键步骤（patch 应用、二进制安装、schema 迁移）失败必须 exit/hard fail。
-- **`2>/dev/null || true` 审查**: 安装/部署步骤用此模式静默忽略失败 → 缺失组件被 symlink 指向空 → 运行时才暴露。install 步骤失败应中断构建，不应吞掉错误。
-- **依赖缺失 hard fail vs warn**: 构建必需依赖（just/toon/jq）缺失 → die；运行时可选依赖缺失 → warn 并降级。区分场景，不一刀切。
-
-### 3. 注释与实际一致性
-
-- **"no network needed" 声明**: 凡 `cargo install`/`pip install`/`npm install` 步骤默认联网。声称"no network needed"时，必须有 `--offline` + vendored source 佐证。否则改注释承认联网需求，并确保构建环境有镜像源。
-- **版本约束注释**: `BuildRequires: rust >= X.Y` 注释必须解释为什么是这个版本而非更低的。注释与实际约束矛盾（注释说 >=1.86 但 spec 写 >=1.89）时，补全解释（edition/API stability 等原因）。
-
-### 4. 构建依赖闭环
-
-- **首次用户体验**: `do_install_deps` 安装的依赖必须覆盖 `build` 步骤的所有前提。如果 build 需要 `just`/`toon`/特定 Rust 版本，deps 步骤必须安装它们。审查时从 build recipe 逆推所有前提，与 deps 步骤做集合差，差集即为遗漏。
-- **依赖版本最低要求注释化**: 每个 `REQUIRED="X.Y.Z"` 应有注释说明触发原因（edition/feature/API 等），便于后续版本升级时判断是否可降低。
-
-### 5. 跨文件重复与一致性
-
-- **常量去重**: 同一常量（fallback 路径、版本号）在 N 个文件各定义一份 → 改一处漏其余。抽到共享模块/常量文件。跨语言重复（Rust/Python）若完全去重成本过高，至少 Python 端内部去重。
-- **thiserror 属性冗余**: `#[from]` 已隐含 `#[source]`，同时标注两者冗余。thiserror 文档明确声明此规则。
-
-### 6. 构建产物验证
-
-- **patch fuzz 验证**: `patch --forward` 允许 fuzz 匹配 → context 行偏移仍成功但可能 patch 到错误位置。CI/发布前必须跑一次干净构建并验证 patch 精确匹配（0-fuzz），贴输出到 PR description。
-- **缩进一致性**: shell 脚本 `else` 分支内行无缩进、注释缩进不一致 → 影响可读性但不影响功能。低优先级但应在改动触及该文件时顺手修。
+Review 时按 `.claude/rules/review.md` 中的逻辑体系逐层审查，输出结论分三级：阻塞(block) / 建议修(suggest) / 可选清理(clean)。
